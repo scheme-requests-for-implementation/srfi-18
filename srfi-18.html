@@ -1,0 +1,710 @@
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML//EN">
+<html>
+  <head>
+    <title>SRFI 18: Multithreading support</title>
+  </head>
+
+  <body>
+
+<H1>Title</H1>
+
+Multithreading support
+
+<H1>Author</H1>
+
+Marc Feeley
+
+<H1>Status</H1>
+
+This SRFI is currently in ``draft'' status.  To see an explanation of each status that a SRFI can hold, see <A HREF="http://srfi.schemers.org/srfi-process.html">here</A>.
+It will remain in draft status until 2000/04/06, or as amended.
+To provide input on this SRFI, please <CODE><A
+HREF="mailto:srfi-18@srfi.schemers.org">mail to
+&lt;srfi-18@srfi.schemers.org&gt;</A></CODE>.  See <A HREF=../srfi-list-subscribe.html>instructions here</A> to subscribe to the list.  You can access previous messages via <A HREF=mail-archive/maillist.html>the archive of the mailing list</A>.
+<P><UL>
+<LI>Received: 2000/02/04</LI>
+<LI>Draft: 2000/02/07-2000/04/06</LI>
+</UL>
+
+
+<H1>Abstract</H1>
+
+This SRFI defines the following multithreading datatypes for Scheme
+<UL>
+<LI>Thread
+<!--
+<LI>Thread group
+-->
+<LI>Mutex
+<LI>Condition variable
+</UL>
+
+<H1>Issues</H1>
+
+<UL>
+
+<LI>Should scheduling be round-robin and should mutex wakeups be FIFO
+(as currently specified) or should a weaker form of fairness be used?
+
+<LI>Should the range of thread priorities be fixed, or should there be
+some extra procedures to get the min/max priorities?
+
+<LI>Should there be some kind of priority aging as in most UNIX
+systems (i.e. the priority of a thread gradually increases with time
+as long as it is runnable and drops back when it runs), or a priority
+decay as in QNX (i.e. the priority of a thread drops by one if it has
+run for more than it's quantum without blocking, see <A
+HREF="http://www.qnx.com/literature/qnx_sysarch/microkernel.html#SCHEDULING">http://www.qnx.com/literature/qnx_sysarch/microkernel.html#SCHEDULING</A>),
+or something else?
+
+<LI>Should the range of thread quantums be fixed, or should there be
+some extra procedures to get the min/max quantums, or should there be
+no upper limit?
+
+<LI>Should the thread quantums be measured in actual time units, such
+as microseconds?
+
+<LI>Should the thread system be "builtin" to the Scheme system, in
+such a way that the call to <CODE>thread-setup!</CODE> is performed
+implicitly by the Scheme runtime system as though the whole program
+was passed in a thunk to <CODE>thread-setup!</CODE>.
+
+<LI>There is clearly an interaction between threads and exceptions.
+What should happen when a thread raises an exception?  Here are
+some possible behaviors:
+
+  <OL>
+
+  <LI>The thread simply terminates.  Other threads which synchronize
+      with <I>it</I> using <CODE>(mutex-lock! (thread-end-mutex
+      <I>it</I>))</CODE> will raise an "abandoned mutex" exception.
+
+  <LI>Change the specification of <CODE>(thread-result
+      <I>it</I>)</CODE> so that the current thread waits for <I>it</I>
+      to terminate and then the same exception is raised in the
+      current thread.
+
+  </OL>
+
+<LI>Should the datatypes be distinct from all other Scheme datatypes,
+i.e.  if any of the predicates listed in Section 3.2 of the R5RS is
+true of <CODE><I>obj</I></CODE>, then <CODE>thread?</CODE>,
+<CODE>mutex?</CODE>, and <CODE>condition-variable?</CODE> is false of
+<CODE><I>obj</I></CODE>.
+
+<LI>Should other features of the Java thread model be added, such as:
+
+  <OL>
+
+  <LI>Thread groups.  This might be useful to implement a debugger, or
+      to encapsulate the threads assigned to different tasks or users.
+
+  <LI>Thread interrupts.  The mechanism can be implemented at the
+      user-level with a flag and mutex, but should all threads have
+      this mechanism?
+
+  <LI>Thread local storage.  I think dynamically scoped variables
+      would be a better interface.
+
+  </OL>
+
+</UL>
+
+<H1>Rationale</H1>
+
+Multithreading is a paradigm that is well suited for building complex
+systems such as: servers, GUIs, and high-level operating systems.  All
+thread systems, including the one proposed here, offer mechanisms for
+creating new threads of execution and for synchronizing them.
+Mechanisms for controlling access privileges for various operations
+are also usually provided by thread systems.  This SRFI does not
+include such access control mechanisms because it aims to provide
+basic mechanisms on top of which higher-level abstractions can be
+built.
+
+<H1>Specification</H1>
+
+The thread system implements the following data types:
+<UL>
+<LI>Thread (a virtual processor which shares address space with all other threads)
+<!--
+<LI>Thread group (a collection of threads)
+-->
+<LI>Mutex (a mutual exclusion device, also known as a lock)
+<LI>Condition variable (a queue of blocked threads)
+</UL>
+
+<P>
+
+A "running" thread is a thread that is currently executing (there
+could be more than one on a multiprocessor machine).  A "runnable"
+thread is a thread that is not running and that is not blocked waiting
+for a mutex to unlock, an I/O operation to become possible, etc.  Each
+thread has a "priority", which is an integer from 0 to 7, and an
+"quantum", which is an integer from 1 to 256.  Let P be the highest
+priority of the set of runnable threads.  The scheduler will pick the
+priority P thread that has become runnable for the longest time and
+resume its execution.  If the thread has not blocked or terminated
+after a certain time slice has elapsed, the scheduler will preempt the
+thread and pick the next thread to schedule.  The time slice assigned
+to a thread is the thread's quantum, measured in ticks (where a tick
+is some small but implementation dependent value).  The quantum is
+thus an approximation of the rate of progress of the thread relative
+to the other threads of the same priority.
+
+<P>
+
+A mutex can be in one of three states: unlocked, locked, and
+abandoned.  When a mutex is in the locked state, its "owner" is the
+thread that locked it.  An abandoned mutex is a previously locked
+mutex whose owner has terminated.  When a thread unlocks or abandons a
+mutex, if threads are waiting for the mutex to unlock, the thread that
+has been waiting the longest becomes runnable.
+
+<P>
+
+A condition variable represents a set of blocked threads.  These
+blocked threads are waiting for a certain condition to become true.
+When a thread modifies some program state that might make the
+condition true, the thread unblocks some number of threads (depending
+on the primitive used) so they can check the value of the condition.
+This allows complex forms of interthread synchronization to be
+expressed more conveniently than with mutexes alone.
+
+<DL>
+<DT><PRE>
+(thread-setup! <I>thunk</I>)                                 ;procedure
+</PRE><DD>
+
+    The procedure <CODE>thread-setup!</CODE> initializes the thread
+    system and then creates and starts a "root" thread of unspecified
+    priority and quantum, roughly as if the expression
+    <CODE>(thread-start!  (make-thread <I>thunk</I>))</CODE> was
+    evaluated.  The <CODE>thread-setup!</CODE> procedure returns when
+    there are no running threads and no runnable threads (possibly
+    because of a deadlock).  <CODE>thread-setup!</CODE> returns an
+    unspecified value.
+
+<PRE>
+        (thread-setup!
+          (lambda ()
+            (thread-start!
+              (make-thread (lambda () (write 'a))))
+            (write 'b)))                ==>  <I>unspecified</I>
+                                             <I>after writing</I> ab <I>or</I> ba
+</PRE>
+
+<DT><PRE>
+(current-thread)                                      ;procedure
+</PRE><DD>
+
+    Returns the current thread.
+
+<PRE>
+        (eq? (current-thread) (current-thread))  ==>  #t
+</PRE>
+
+<DT><PRE>
+(thread? <I>obj</I>)                                         ;procedure
+</PRE><DD>
+
+    Returns <CODE>#t</CODE> if <CODE><I>obj</I></CODE> is a thread,
+    otherwise returns <CODE>#f</CODE>.
+<!--
+    If any of the predicates listed in Section 3.2 of the R5RS is true of
+    <CODE><I>obj</I></CODE>, then <CODE>thread?</CODE> is false of
+    <CODE><I>obj</I></CODE>.
+-->
+
+<PRE>
+        (thread? (current-thread))  ==>  #t
+        (thread? 'foo)              ==>  #f
+</PRE>
+
+<DT><PRE>
+<!--
+(make-thread <I>thunk</I> [<I>name</I> [<I>thread-group</I>]])             ;procedure
+-->
+(make-thread <I>thunk</I> [<I>name</I>])                            ;procedure
+</PRE><DD>
+
+    Returns a newly allocated thread.  This thread IS NOT
+    automatically made runnable (the procedure
+    <CODE>thread-start!</CODE> must be used for this).  A thread has
+    the following fields: priority, quantum, name, result, end-mutex,
+    and a list of mutexes it owns.  The thread's execution consists of
+    a call to <I>thunk</I> with a continuation that causes the (then)
+    current thread to store the result in it's result field, unlock
+    it's end-mutex (see below), abandon all mutexes it owns, and
+    finally terminate.  The optional <CODE><I>name</I></CODE> is an
+    arbitrary Scheme object which identifies the thread (useful for
+    debugging); it defaults to an unspecified value.
+<!--
+    The optional <CODE><I>thread-group</I></CODE> indicates which
+    thread group this thread belongs to; it defaults to the thread
+    group of the current thread.
+-->
+    The priority and quantum of the thread are set to the same value
+    as the current thread.  The thread also inherits the dynamic
+    environment from the current thread (i.e. procedures which access
+    the dynamic environment, such as
+    <CODE>(current-input-port)</CODE>, obtain the binding in effect
+    when <CODE>make-thread</CODE> was called).  Each thread contains a
+    mutex (the end-mutex) which is initially in a locked state owned
+    by the created thread and which is unlocked when the thread
+    terminates normally.  Thus a thread can wait for the normal
+    termination of another thread by locking that thread's end-mutex.
+
+<PRE>
+        (make-thread (lambda () (write 'hello)))  ==>  <I>a thread</I>
+</PRE>
+
+<DT><PRE>
+(thread-priority <I>thread</I>)                              ;procedure
+</PRE><DD>
+
+    Returns the priority of the <CODE><I>thread</I></CODE>.
+
+<PRE>
+        (thread-priority (current-thread))  ==>  1
+</PRE>
+
+<DT><PRE>
+(thread-priority-set! <I>thread</I> <I>priority</I>)                ;procedure
+</PRE><DD>
+
+    Changes the priority of the <CODE><I>thread</I></CODE> to
+    <CODE><I>priority</I></CODE>.  The <CODE><I>priority</I></CODE>
+    must be an exact integer in the range 0 to 7 (inclusive).  If
+    <CODE><I>thread</I></CODE> is running, the scheduler may wait
+    until the thread blocks or is preempted before reconsidering
+    scheduling order.  <CODE>thread-priority-set!</CODE> returns an
+    unspecified value.
+
+<PRE>
+        (thread-priority-set! (current-thread) 3)  ==>  <I>unspecified</I>
+</PRE>
+
+<DT><PRE>
+(thread-quantum <I>thread</I>)                               ;procedure
+</PRE><DD>
+
+    Returns the quantum of the <CODE><I>thread</I></CODE>.
+
+<PRE>
+        (thread-quantum (current-thread))  ==>  16
+</PRE>
+
+<DT><PRE>
+(thread-quantum-set! <I>thread</I> <I>quantum</I>)                  ;procedure
+</PRE><DD>
+
+    Changes the quantum of the <CODE><I>thread</I></CODE> to
+    <CODE><I>quantum</I></CODE>.  The <CODE><I>quantum</I></CODE> must
+    be an exact integer in the range 1 to 256 (inclusive).  If
+    <CODE><I>thread</I></CODE> is running, the scheduler may wait
+    until the thread blocks or is preempted before reconsidering
+    scheduling order.  <CODE>thread-quantum-set!</CODE> returns an
+    unspecified value.
+
+<PRE>
+        (thread-quantum-set! (current-thread) 2)  ==>  <I>unspecified</I>
+</PRE>
+
+<DT><PRE>
+(thread-name <I>thread</I>)                                  ;procedure
+</PRE><DD>
+
+    Returns the name of the <CODE><I>thread</I></CODE>.
+
+<PRE>
+        (thread-name (make-thread (lambda () #f) 'foo))  ==>  foo
+</PRE>
+
+<DT><PRE>
+(thread-result <I>thread</I>)                                ;procedure
+</PRE><DD>
+
+    Return's the content of the <CODE><I>thread</I></CODE>'s result
+    field.  Note that the result field contains an unspecified value
+    until the thread terminates normally.
+
+<PRE>
+        (thread-result (current-thread))  ==>  <I>unspecified</I>
+</PRE>
+
+<DT><PRE>
+(thread-end-mutex <I>thread</I>)                             ;procedure
+</PRE><DD>
+
+    Returns the end-mutex of the <CODE><I>thread</I></CODE>.
+
+<PRE>
+        (let ((child (make-thread (lambda () (expt 2 100)))))
+          (thread-start! child)
+          (do-something-else!)
+          (mutex-lock! (thread-end-mutex child))
+          (thread-result child))  ==>  1267650600228229401496703205376
+
+        (define (thread-probably-alive? thread)
+          (eq? (mutex-owner (thread-end-mutex thread)) thread))
+</PRE>
+
+    NOTE: It is not an error for a thread to explicitly unlock the
+    end-mutex of another thread or of itself.  So thread liveness and
+    the state of an end-mutex are only linked by convention.
+
+<DT><PRE>
+(thread-start! <I>thread</I>)                                 ;procedure
+</PRE><DD>
+
+    Makes <CODE><I>thread</I></CODE> runnable.  An exception is raised
+    if the <CODE><I>thread</I></CODE> was previously started or
+    terminated.  <CODE>thread-start!</CODE> returns an unspecified
+    value.
+
+<PRE>
+        (thread-start!
+          (make-thread (lambda () (write 'x))))  ==>  <I>unspecified</I>
+</PRE>
+
+    NOTE: It is useful to separate thread creation and thread
+    activation to avoid the race condition that would occur if the
+    created thread tries to examine a table in which the current
+    thread stores the created thread.  See the last example of
+    <CODE>thread-terminate!</CODE> which contains mutually recursive
+    threads.
+
+<DT><PRE>
+(thread-terminate! <I>thread</I>)                             ;procedure
+</PRE><DD>
+
+    Causes an abnormal termination of the <CODE><I>thread</I></CODE>.
+    If <CODE><I>thread</I></CODE> is not running or it is the current
+    thread, it is terminated immediately, otherwise the scheduler may
+    wait until the thread blocks or is preempted before terminating
+    it.  All mutexes owned by the <CODE><I>thread</I></CODE>, such as
+    the thread's end-mutex, will be abandoned.  It is not an error if
+    <CODE><I>thread</I></CODE> is already terminated, blocked, or not
+    started.  <CODE>thread-terminate!</CODE> returns an unspecified
+    value.
+
+<PRE>
+        (thread-terminate! (current-thread))  ==>  <I>does not return</I>
+
+        (define (amb thunk1 thunk2)
+          ; note: we assume that assignment is an atomic operation
+          (let ((result #f)
+                (done (make-mutex (current-thread))))
+            (letrec ((child1
+                      (make-thread
+                        (lambda ()
+                          (set! result (thunk1))
+                          (mutex-unlock! done)
+                          (thread-terminate! child2))))
+                     (child2
+                      (make-thread
+                        (lambda ()
+                          (set! result (thunk2))
+                          (mutex-unlock! done)
+                          (thread-terminate! child1)))))
+              (thread-start! child1)
+              (thread-start! child2)
+              (mutex-lock! done)
+              result)))
+</PRE>
+
+    NOTE: This operation must be used carefully because it terminates
+    a thread abruptly and it is impossible for that thread to perform
+    any kind of cleanup.  This may be a problem if the thread is in
+    the middle of a critical section where some structure has been put
+    in an inconsistent state.  However, another thread attempting to
+    enter this critical section (by calling <CODE>mutex-lock!</CODE>
+    on the appropriate mutex) will raise an exception because that
+    mutex was abandoned.  This helps avoid observing an inconsistent
+    state.
+
+<DT><PRE>
+(thread-yield!)                                       ;procedure
+</PRE><DD>
+
+    Forces the current thread to be immediately preempted.
+    <CODE>thread-yield!</CODE> returns an unspecified value.
+
+<PRE>
+        (thread-yield!)  ==>  <I>unspecified</I>
+</PRE>
+
+<DT><PRE>
+(mutex? <I>obj</I>)                                          ;procedure
+</PRE><DD>
+
+    Returns <CODE>#t</CODE> if <CODE><I>obj</I></CODE> is a mutex,
+    otherwise returns <CODE>#f</CODE>.
+<!--
+    If any of the predicates listed in Section 3.2 of the R5RS is true
+    of <CODE><I>obj</I></CODE>, then <CODE>mutex?</CODE> is false of
+    <CODE><I>obj</I></CODE>.
+-->
+
+<PRE>
+        (mutex? (make-mutex))  ==>  #t
+        (mutex? 'foo)          ==>  #f
+</PRE>
+
+<DT><PRE>
+(make-mutex [<I>thread</I>])                                 ;procedure
+</PRE><DD>
+
+    Returns a newly allocated mutex.  If <CODE><I>thread</I></CODE> is
+    not supplied or is <CODE>#f</CODE> the mutex is in an unlocked
+    state, if the <CODE><I>thread</I></CODE> is terminated the mutex
+    is in an abandoned state, otherwise the mutex is in a locked state
+    and is owned by the <CODE><I>thread</I></CODE>.
+
+<PRE>
+        (make-mutex)                   ==>  <I>an unlocked mutex</I>
+        (make-mutex #f)                ==>  <I>an unlocked mutex</I>
+        (make-mutex (current-thread))  ==>  <I>a locked mutex</I>
+</PRE>
+
+<DT><PRE>
+(mutex-owner <I>mutex</I>)                                   ;procedure
+</PRE><DD>
+
+    Returns information about the state of the <CODE><I>mutex</I></CODE>.  The
+    possible results are:
+
+       <UL>
+
+       <LI><STRONG>thread T</STRONG>:
+           the <CODE><I>mutex</I></CODE> is locked (thread T is
+           the owner of the <CODE><I>mutex</I></CODE>)
+
+       <LI><STRONG><CODE>#f</CODE></STRONG>:
+           the <CODE><I>mutex</I></CODE> is unlocked (it has no owner)
+
+       <LI><STRONG><CODE>#t</CODE></STRONG>:
+           the <CODE><I>mutex</I></CODE> is abandoned (the thread that
+           owned the <CODE><I>mutex</I></CODE> is currently
+           terminated)
+
+       </UL>
+
+<PRE>
+        (mutex-owner (make-mutex))  ==>  #f
+
+        (define (thread-alive? thread)
+          (let* ((mutex (make-mutex thread))
+                 (result (eq? (mutex-owner mutex) thread)))
+            (mutex-unlock! mutex)
+            result))
+</PRE>
+
+<DT><PRE>
+(mutex-lock! <I>mutex</I>)                                   ;procedure
+</PRE><DD>
+
+    If the <CODE><I>mutex</I></CODE> is currently locked, the current
+    thread is suspended until the <CODE><I>mutex</I></CODE> is
+    unlocked or abandoned (it is not an error if the
+    <CODE><I>mutex</I></CODE> is owned by the current thread).  Then
+    the current thread locks the <CODE><I>mutex</I></CODE> by becoming
+    its owner.  An exception is raised (after locking the
+    <CODE><I>mutex</I></CODE>) if the <CODE><I>mutex</I></CODE> was
+    abandoned.  <CODE>mutex-lock!</CODE> returns an unspecified value.
+
+<PRE>
+        (define (thread-join! thread)
+          (let ((end-mutex (thread-end-mutex thread)))
+            (mutex-lock! end-mutex))) ; only allows a single join
+</PRE>
+
+<!--
+<DT><PRE>
+(mutex-lock-no-exception-if-abandoned! <I>mutex</I>)         ;procedure
+</PRE><DD>
+
+    If the <CODE><I>mutex</I></CODE> is currently locked, the current
+    thread is suspended until the <CODE><I>mutex</I></CODE> is
+    unlocked or abandoned (it is not an error if the
+    <CODE><I>mutex</I></CODE> is owned by the current thread).  Then
+    the current thread locks the <CODE><I>mutex</I></CODE> by becoming
+    its owner.  <CODE>mutex-lock-no-exception-if-abandoned!</CODE>
+    returns an unspecified value.
+
+<PRE>
+        (define (thread-terminate-and-wait! thread)
+          (thread-terminate! thread)
+          (let ((end-mutex (thread-end-mutex thread)))
+            (mutex-lock-no-exception-if-abandoned! end-mutex)))
+</PRE>
+-->
+
+<DT><PRE>
+(mutex-unlock! <I>mutex</I> [<I>condition-variable</I>])            ;procedure
+</PRE><DD>
+
+    Unlocks the <CODE><I>mutex</I></CODE>.  It is not an error to
+    unlock an unlocked mutex, an abandoned mutex, and a mutex that is
+    owned by a thread other than the current thread.  If threads are
+    waiting for this <CODE><I>mutex</I></CODE> to unlock, the thread
+    that has been waiting the longest becomes runnable and is made the
+    owner of the lock.  If <CODE><I>condition-variable</I></CODE> is
+    supplied, the current thread is blocked and added to the
+    <CODE><I>condition-variable</I></CODE> (this is done before
+    unlocking the <CODE><I>mutex</I></CODE>).
+    <CODE>mutex-unlock!</CODE> returns an unspecified value.
+
+<PRE>
+        (define next-serial-number!
+          (let ((counter 0)
+                (mutex (make-mutex)))
+            (lambda ()
+              (mutex-lock! mutex)
+              (let ((result (+ counter 1)))
+                (set! counter result)
+                (mutex-unlock! mutex)
+                result))))
+
+        (define (thread-join-multiple! thread)
+          (let ((end-mutex (thread-end-mutex thread)))
+            (mutex-lock! end-mutex)
+            (mutex-unlock! end-mutex))) ; to allow multiple joins
+</PRE>
+
+<DT><PRE>
+(condition-variable? <I>obj</I>)                             ;procedure
+</PRE><DD>
+
+    Returns <CODE>#t</CODE> if <CODE><I>obj</I></CODE> is a condition
+    variable, otherwise returns <CODE>#f</CODE>.
+<!--
+    If any of the predicates listed in Section 3.2 of the R5RS is true
+    of <CODE><I>obj</I></CODE>, then <CODE>condition-variable?</CODE>
+    is false of <CODE><I>obj</I></CODE>.
+-->
+
+<PRE>
+        (condition-variable? (make-condition-variable))  ==>  #t
+        (condition-variable? 'foo)                       ==>  #f
+</PRE>
+
+<DT><PRE>
+(make-condition-variable)                             ;procedure
+</PRE><DD>
+
+    Returns a newly allocated empty condition variable.
+
+<PRE>
+        (make-condition-variable)  ==>  <I>an empty condition variable</I>
+
+        (define (make-semaphore n)
+          (vector n (make-mutex) (make-condition-variable)))
+
+        (define (semaphore-wait! sema)
+          (mutex-lock! (vector-ref sema 1))
+          (let ((n (vector-ref sema 0)))
+            (if (> n 0)
+                (begin
+                  (vector-set! sema 0 (- n 1))
+                  (mutex-unlock! (vector-ref sema 1)))
+                (begin
+                  (mutex-unlock! (vector-ref sema 1) (vector-ref sema 2))
+                  (semaphore-wait! sema))))
+</PRE>
+
+<DT><PRE>
+(condition-variable-signal! <I>condition-variable</I>)       ;procedure
+</PRE><DD>
+
+    If there are threads blocked on the
+    <CODE><I>condition-variable</I></CODE>, the thread that has been
+    blocked for the longest time is removed and made runnable.
+    <CODE>condition-variable-signal!</CODE> returns an unspecified
+    value.
+
+<PRE>
+        (define (semaphore-signal! sema)
+          (mutex-lock! (vector-ref sema 1))
+          (let ((n (+ (vector-ref sema 0) 1)))
+            (vector-set! sema 0 n)
+            (mutex-unlock! (vector-ref sema 1))
+            (if (> n 0)
+                (condition-variable-signal! (vector-ref sema 2)))))
+</PRE>
+
+<DT><PRE>
+(condition-variable-broadcast! <I>condition-variable</I>)    ;procedure
+</PRE><DD>
+
+    Extracts from the <CODE><I>condition-variable</I></CODE> all the
+    threads that are blocked and makes them runnable in the same order
+    they blocked on the <CODE><I>condition-variable</I></CODE>.
+    <CODE>condition-variable-broadcast!</CODE> returns an unspecified
+    value.
+
+<PRE>
+        (define (semaphore-signal-by! sema increment)
+          (mutex-lock! (vector-ref sema 1))
+          (let ((n (+ (vector-ref sema 0) increment)))
+            (vector-set! sema 0 n)
+            (mutex-unlock! (vector-ref sema 1))
+            (if (> n 0)
+                (condition-variable-broadcast! (vector-ref sema 2)))))
+</PRE>
+
+</DL>
+
+<H1>Acknowledgements</H1>
+
+Much of this design has been influenced by other thread systems.  Here
+are the main contributions:
+<UL>
+<LI>Java: names, separation of thread creation and thread start
+<LI>Erlang/Franz Common Lisp: thread advantage/quantum
+<LI>Win32: abandoned mutexes
+<LI>POSIX threads: names
+<!--
+<LI>QNX: priority decay
+<LI>Modula-3 and Java: thread interrupts
+-->
+</UL>
+
+<H1>Implementation</H1>
+
+The implementation will be provided at a later time.  Due to the
+non-portable nature of this SRFI the implementation will be for
+a particular Scheme implementation, Gambit-C.
+
+<H1>Copyright</H1>
+Copyright (C) Marc Feeley (2000). All Rights Reserved. 
+<P>
+This document and translations of it may be copied and furnished to
+others, and derivative works that comment on or otherwise explain it
+or assist in its implementation may be prepared, copied, published and
+distributed, in whole or in part, without restriction of any kind,
+provided that the above copyright notice and this paragraph are
+included on all such copies and derivative works. However, this
+document itself may not be modified in any way, such as by removing
+the copyright notice or references to the Scheme Request For
+Implementation process or editors, except as needed for the purpose of
+developing SRFIs in which case the procedures for copyrights defined
+in the SRFI process must be followed, or as required to translate it
+into languages other than English.
+<P>
+The limited permissions granted above are perpetual and will not be
+revoked by the authors or their successors or assigns.
+<P>
+This document and the information contained herein is provided on an
+"AS IS" basis and THE AUTHOR AND THE SRFI EDITORS DISCLAIM ALL
+WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY
+WARRANTY THAT THE USE OF THE INFORMATION HEREIN WILL NOT INFRINGE ANY
+RIGHTS OR ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A
+PARTICULAR PURPOSE.
+
+
+    <HR>
+    <ADDRESS>Editor: <A href="mailto:srfi-editors@srfi.schemers.org">Mike Sperber</A></ADDRESS>
+  </BODY>
+</HTML>
