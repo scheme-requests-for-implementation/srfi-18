@@ -738,7 +738,7 @@ primordial thread terminates (normally or not).
 
     ; a clock with no drift:
 
-    (let ((start (time->seconds (current-time)))
+    (let ((start (time->seconds (current-time))))
       (let loop ((x 1))
         (thread-sleep! (seconds->time (+ x start)))
         (write x)
