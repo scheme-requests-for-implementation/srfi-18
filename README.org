@@ -6,6 +6,8 @@
 
 keywords: [[https://srfi.schemers.org/?keywords=concurrency][Concurrency]]
 
+library-name: multithreading
+
 This repository hosts [[https://srfi.schemers.org/srfi-18/][SRFI 18]]: Multithreading support, a [[https://srfi.schemers.org/][Scheme Request for Implementation]].
 
 This SRFI is in /final/ status.
